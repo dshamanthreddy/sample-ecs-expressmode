@@ -2,6 +2,11 @@
 .terraform/
 
 # .tfstate files
+# macOS
+.DS_Store
+**/.DS_Store
+
+
 *.tfstate
 *.tfstate.*
 
