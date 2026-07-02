@@ -29,6 +29,7 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
     steps:
       - name: Validate confirmation input
+        working-directory: ${{ github.workspace }}
         run: |
           if [ "${{ github.event.inputs.confirm }}" != "destroy" ]; then
             echo "::error::Confirmation failed. You must type 'destroy' to proceed."
