@@ -1,7 +1,7 @@
 name: Infra and App Pipeline
 
-# Pull requests -> terraform plan only (review surface, no changes).
-# Push to main / manual dispatch -> gated apply, then build & deploy.
+# Push or PR      -> terraform plan only (preview, no changes).
+# Manual dispatch -> gated apply, then build & deploy.
 #
 # The "apply" and "deploy" jobs run in the `production` GitHub Environment,
 # which is configured with a required reviewer, so a human must approve
@@ -36,8 +36,8 @@ permissions:
 
 jobs:
   plan:
-    name: Terraform plan (PR review)
-    if: github.event_name == 'pull_request'
+    name: Terraform plan (preview)
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -70,8 +70,8 @@ jobs:
         run: terraform plan -input=false -no-color
 
   apply:
-    name: Terraform apply (gated)
-    if: github.event_name != 'pull_request'
+    name: Terraform apply (gated, manual only)
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: production
     defaults:
@@ -100,7 +100,7 @@ jobs:
 
   deploy:
     name: Build image and deploy app
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
     needs: apply
     runs-on: ubuntu-latest
     environment: production
