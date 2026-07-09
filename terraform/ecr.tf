@@ -1,6 +1,9 @@
 resource "aws_ecr_repository" "app" {
-  name                 = local.name_prefix
-  image_tag_mutability = "MUTABLE"
+  name = local.name_prefix
+
+  # Immutable tags: a given tag (e.g. a git SHA) can never be overwritten,
+  # which makes deployments and rollbacks deterministic.
+  image_tag_mutability = "IMMUTABLE"
   force_delete         = true
 
   image_scanning_configuration {

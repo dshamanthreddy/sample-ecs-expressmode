@@ -29,9 +29,9 @@ variable "public_subnet_cidrs" {
 }
 
 variable "container_port" {
-  description = "Port the Nginx container listens on."
+  description = "Port the Nginx container listens on (non-root nginx uses 8080)."
   type        = number
-  default     = 80
+  default     = 8080
 }
 
 variable "desired_count" {

@@ -69,6 +69,14 @@ resource "aws_ecs_service" "app" {
     container_port   = var.container_port
   }
 
+  # If a deployment's tasks never reach a healthy/steady state, ECS aborts it
+  # and rolls back to the last known-good task set instead of leaving the
+  # service broken.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
   # CI updates the task definition out-of-band on each deploy, so ignore
   # image/task-definition drift to avoid Terraform reverting deployments.
   lifecycle {

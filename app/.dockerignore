@@ -1,0 +1,5 @@
+# Keep the build context small and reproducible
+Dockerfile
+.dockerignore
+*.md
+**/.DS_Store
