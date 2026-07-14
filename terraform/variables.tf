@@ -40,6 +40,52 @@ variable "desired_count" {
   default     = 2
 }
 
+variable "compute_type" {
+  description = "ECS compute model: FARGATE (serverless) or MANAGED_INSTANCES (AWS-managed EC2)."
+  type        = string
+  default     = "FARGATE"
+
+  validation {
+    condition     = contains(["FARGATE", "MANAGED_INSTANCES"], var.compute_type)
+    error_message = "compute_type must be either \"FARGATE\" or \"MANAGED_INSTANCES\"."
+  }
+}
+
+variable "mi_capacity_option" {
+  description = "Purchasing option for Managed Instances: ON_DEMAND or SPOT (only used when compute_type = MANAGED_INSTANCES)."
+  type        = string
+  default     = "ON_DEMAND"
+
+  validation {
+    condition     = contains(["ON_DEMAND", "SPOT"], var.mi_capacity_option)
+    error_message = "mi_capacity_option must be either \"ON_DEMAND\" or \"SPOT\"."
+  }
+}
+
+variable "mi_vcpu_min" {
+  description = "Minimum vCPUs for Managed Instances attribute-based selection."
+  type        = number
+  default     = 1
+}
+
+variable "mi_vcpu_max" {
+  description = "Maximum vCPUs for Managed Instances attribute-based selection."
+  type        = number
+  default     = 4
+}
+
+variable "mi_memory_min_mib" {
+  description = "Minimum memory (MiB) for Managed Instances attribute-based selection."
+  type        = number
+  default     = 1024
+}
+
+variable "mi_memory_max_mib" {
+  description = "Maximum memory (MiB) for Managed Instances attribute-based selection."
+  type        = number
+  default     = 8192
+}
+
 variable "task_cpu" {
   description = "Fargate task CPU units (256 = 0.25 vCPU)."
   type        = number

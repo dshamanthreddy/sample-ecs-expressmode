@@ -1,3 +1,8 @@
+locals {
+  is_fargate = var.compute_type == "FARGATE"
+  is_mi      = var.compute_type == "MANAGED_INSTANCES"
+}
+
 resource "aws_ecs_cluster" "main" {
   name = "${local.name_prefix}-cluster"
 
@@ -13,8 +18,10 @@ resource "aws_cloudwatch_log_group" "app" {
 }
 
 resource "aws_ecs_task_definition" "app" {
-  family                   = "${local.name_prefix}-task"
-  requires_compatibilities = ["FARGATE"]
+  family = "${local.name_prefix}-task"
+  # Managed Instances register as EC2 container instances, so tasks use EC2
+  # compatibility; Fargate uses FARGATE.
+  requires_compatibilities = local.is_fargate ? ["FARGATE"] : ["EC2"]
   network_mode             = "awsvpc"
   cpu                      = var.task_cpu
   memory                   = var.task_memory
@@ -55,12 +62,25 @@ resource "aws_ecs_service" "app" {
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.app.arn
   desired_count   = var.desired_count
-  launch_type     = "FARGATE"
+
+  # Fargate uses launch_type; Managed Instances use a capacity provider strategy.
+  launch_type = local.is_fargate ? "FARGATE" : null
+
+  dynamic "capacity_provider_strategy" {
+    for_each = local.is_mi ? [1] : []
+    content {
+      capacity_provider = aws_ecs_capacity_provider.mi[0].name
+      weight            = 1
+      base              = 0
+    }
+  }
 
   network_configuration {
-    subnets          = aws_subnet.public[*].id
-    security_groups  = [aws_security_group.ecs_tasks.id]
-    assign_public_ip = true # needed in public subnets to reach ECR/CloudWatch
+    subnets         = aws_subnet.public[*].id
+    security_groups = [aws_security_group.ecs_tasks.id]
+    # Public IP on the task ENI is a Fargate-only setting; for Managed
+    # Instances the EC2 host handles image pulls over its own network.
+    assign_public_ip = local.is_fargate
   }
 
   load_balancer {
@@ -83,5 +103,8 @@ resource "aws_ecs_service" "app" {
     ignore_changes = [task_definition]
   }
 
-  depends_on = [aws_lb_listener.http]
+  depends_on = [
+    aws_lb_listener.http,
+    aws_ecs_cluster_capacity_providers.mi,
+  ]
 }

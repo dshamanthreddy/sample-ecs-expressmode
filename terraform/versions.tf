@@ -3,8 +3,10 @@ terraform {
 
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
+      source = "hashicorp/aws"
+      # ECS Managed Instances (managed_instances_provider) requires v6.15+;
+      # capacity_option_type (Spot/On-Demand) requires ~v6.24+.
+      version = ">= 6.24.0, < 7.0.0"
     }
   }
 
