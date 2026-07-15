@@ -1,90 +1,154 @@
 # sample-ecs-expressmode
 
-Nginx running on **Amazon ECS (Fargate)** behind an Application Load Balancer.
-The container image is built and stored in **Amazon ECR**, and **GitHub Actions**
-builds the image and deploys it to ECS on every push to `main`.
+Nginx running on **Amazon ECS** behind an Application Load Balancer, with a
+choice of **Fargate** or **ECS Managed Instances** compute. The container image
+is built and stored in **Amazon ECR**, and **GitHub Actions** runs the entire
+lifecycle: Terraform for infrastructure and the build/deploy of the app.
 
 ## Architecture
 
 ```
-GitHub push ──► GitHub Actions ──► build image ──► Amazon ECR
-                                          │
-                                          └──► update ECS service ──► Fargate tasks
-Internet ──► ALB (HTTP :80) ──► Target Group ──► Nginx tasks (:80)
+Pull request / push to main ─► GitHub Actions: terraform plan (preview only)
+
+Manual "Run workflow" ─► [gated apply] ─► Terraform provisions AWS infra
+                                    └────► build image ─► ECR ─► update ECS service
+
+Internet ─► ALB (HTTP :80) ─► Target Group (:8080) ─► Nginx tasks (:8080)
+                                                        on Fargate OR Managed Instances
 ```
 
-## Layout
+## Repository layout
 
 ```
-app/                     Nginx app + Dockerfile
-  Dockerfile
-  nginx.conf
-  html/index.html
-terraform/               Infrastructure (VPC, ECR, ECS, ALB, IAM)
+app/
+  Dockerfile              Multi-stage, non-root Nginx image (serves on :8080)
+  nginx.conf              Server config + /health endpoint, gzip_static
+  html/index.html         Static content
+  .dockerignore
+terraform/
+  versions.tf             Providers + S3 remote state backend
+  providers.tf            AWS provider + default tags
+  variables.tf            All inputs (incl. compute_type toggle)
+  network.tf              VPC, public subnets, IGW, routing
+  security_groups.tf      ALB and task security groups
+  ecr.tf                  ECR repository (immutable tags, scan, lifecycle)
+  iam.tf                  ECS execution role + GitHub Actions OIDC role
+  alb.tf                  ALB, target group (/health), listener
+  ecs.tf                  Cluster, task definition, service (compute-aware)
+  managed_instances.tf    Managed Instances capacity provider + IAM (opt-in)
+  outputs.tf              ALB DNS, ECR URL, names, role ARN
 .github/workflows/
-  deploy.yml             CI/CD: build → push to ECR → deploy to ECS
+  pipeline.yml            plan on push/PR; gated apply + deploy on manual run
+  destroy.yml             manual-only terraform destroy (typed confirmation)
 ```
+
+## Compute options: Fargate vs Managed Instances
+
+Choose the compute model with the `compute_type` variable:
+
+| `compute_type`        | What you get |
+|-----------------------|--------------|
+| `FARGATE` (default)   | Serverless. No hosts to manage. |
+| `MANAGED_INSTANCES`   | AWS provisions, patches, scales, and drains EC2 instances on your behalf, while you keep EC2-level flexibility (instance types, Spot, etc.). |
+
+Example `terraform.tfvars` for Managed Instances:
+
+```hcl
+compute_type       = "MANAGED_INSTANCES"
+mi_capacity_option = "SPOT"   # or ON_DEMAND
+mi_vcpu_min        = 1
+mi_vcpu_max        = 4
+mi_memory_min_mib  = 1024
+mi_memory_max_mib  = 8192
+```
+
+Leave `compute_type` unset (or `FARGATE`) and the Managed Instances resources
+are not created. Switching types is a single variable change plus an apply.
 
 ## What Terraform creates
 
 - VPC with two public subnets across two AZs, internet gateway, routing
-- Security groups (ALB open on :80, tasks reachable only from the ALB)
-- ECR repository with image scanning and a 10-image lifecycle policy
-- ECS Fargate cluster, task definition, and service
-- Application Load Balancer, target group (`/health` check), and listener
-- IAM: ECS task execution role + a GitHub Actions OIDC role for CI
+- Security groups (ALB open on :80; tasks reachable only from the ALB on :8080)
+- ECR repository with image scanning and a lifecycle policy
+- ECS Fargate cluster, task definition, and service (with circuit breaker)
+- When `compute_type = MANAGED_INSTANCES`: a Managed Instances capacity
+  provider, cluster association, ECS infrastructure role, and instance profile
+- Application Load Balancer, target group (`/health` check), and HTTP listener
+- IAM: ECS task execution role + a GitHub Actions OIDC role
 
-## Prerequisites
+## Best practices baked in
 
-- Terraform >= 1.5, AWS CLI configured with admin-ish credentials for the first apply
-- A GitHub OIDC provider in your AWS account. If you don't have one yet:
-  ```bash
-  aws iam create-open-id-connect-provider \
-    --url https://token.actions.githubusercontent.com \
-    --client-id-list sts.amazonaws.com \
-    --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
-  ```
+**Container / app**
+- Multi-stage Docker build (build stage pre-compresses assets; minimal runtime)
+- Runs as a **non-root** user (`nginx-unprivileged`, uid 101) on port 8080
+- Pinned base images, OCI labels, `.dockerignore`, container `HEALTHCHECK`
 
-## Deploy the infrastructure
+**ECR**
+- **Immutable tags** — deploy strictly by git SHA (no `:latest`)
+- Scan-on-push and a lifecycle policy to expire old images
+- Idempotent push in CI (skips if the commit image already exists)
 
-```bash
-cd terraform
-cp terraform.tfvars.example terraform.tfvars   # edit github_repository, region, etc.
-terraform init
-terraform apply
-```
+**ECS**
+- **Deployment circuit breaker** with automatic rollback on failed deploys
+- Task definition updated out-of-band by CI; Terraform ignores that drift
 
-Note the outputs, especially `github_actions_role_arn` and `ecr_repository_url`.
+**CI/CD (GitHub Actions)**
+- OIDC federation — **no long-lived AWS keys** in GitHub
+- **Plan on push/PR**, gated **apply/deploy** behind a `production` Environment
+  with a required reviewer
+- **Concurrency guard** shared by apply and destroy so state is never mutated
+  by two runs at once
+- All actions **pinned to commit SHAs** (supply-chain hardening)
 
-> First-apply bootstrap: the task definition references `:latest`, which does not
-> exist in ECR until the first image is pushed. The ECS service will wait for a
-> healthy task. Either let the GitHub Actions workflow push the first image, or
-> push one manually:
-> ```bash
-> aws ecr get-login-password --region us-east-1 \
->   | docker login --username AWS --password-stdin <ecr_repository_url>
-> docker build -t <ecr_repository_url>:latest ./app
-> docker push <ecr_repository_url>:latest
-> ```
+**Terraform**
+- **S3 remote state** with native lockfile (`use_lockfile`)
+- Multi-platform provider lock file committed for reproducible CI
+- Input `validation` blocks on `compute_type` and `mi_capacity_option`
 
-## Wire up GitHub Actions
+## Bootstrap prerequisites (one-time, manual)
 
-1. In your GitHub repo, add a secret named `AWS_DEPLOY_ROLE_ARN` set to the
-   `github_actions_role_arn` Terraform output.
-2. Confirm the `env:` values at the top of `.github/workflows/deploy.yml` match
-   your `project_name`/`environment` (defaults assume `nginx-ecs` / `dev`).
-3. Push to `main` (or run the workflow manually). The pipeline builds the image,
-   pushes it to ECR tagged with the commit SHA, registers a new task definition,
-   and rolls out the ECS service.
+Created by hand in the target account (`340290106740`, `us-east-1`):
 
-## Access the app
+1. **GitHub OIDC provider** for `token.actions.githubusercontent.com`.
+2. **S3 state bucket** `tf-state-340290106740-nginx-ecs` (versioning enabled).
+3. **OIDC bootstrap role** `gha-terraform`, trust scoped to
+   `repo:dshamanthreddy/sample-ecs-expressmode:*`, with permissions to manage
+   the infrastructure.
+4. **GitHub repo secret** `AWS_TF_ROLE_ARN` = the bootstrap role ARN.
+5. **GitHub Environment** `production` with a required reviewer (gates apply/deploy).
 
-After a successful deploy, open the `alb_dns_name` output in a browser. `/health`
-returns `200 ok` for the load balancer health check.
+## Deploy
 
-## Clean up
+1. Open a PR or push to `main` → the `plan` job shows what would change.
+2. Trigger **Actions → Infra and App Pipeline → Run workflow**.
+3. Approve the `production` deployment when prompted.
+4. The pipeline applies infrastructure, builds/pushes the image, and rolls out
+   the ECS service, waiting for it to stabilize.
+5. Open the `alb_dns_name` output in a browser; `/health` returns `200 ok`.
 
-```bash
-cd terraform
-terraform destroy
-```
+## Tear down
+
+**Actions → Terraform Destroy (manual) → Run workflow**, type `destroy` to
+confirm. It runs only on manual trigger and never on push.
+
+## Key variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `aws_region` | `us-east-1` | Deployment region |
+| `project_name` / `environment` | `nginx-ecs` / `dev` | Resource name prefix |
+| `desired_count` | `2` | Number of tasks |
+| `container_port` | `8080` | Non-root Nginx port |
+| `compute_type` | `FARGATE` | `FARGATE` or `MANAGED_INSTANCES` |
+| `mi_capacity_option` | `ON_DEMAND` | `ON_DEMAND` or `SPOT` (Managed Instances) |
+| `mi_vcpu_min` / `mi_vcpu_max` | `1` / `4` | Managed Instances vCPU range |
+| `mi_memory_min_mib` / `mi_memory_max_mib` | `1024` / `8192` | Managed Instances memory range |
+
+## Notes
+
+- The public ALB is HTTP on port 80. For production, add an HTTPS (ACM) listener
+  and redirect 80 → 443.
+- Tasks run in public subnets. For a tighter posture, move them to private
+  subnets with a NAT gateway or ECR/S3 VPC endpoints.
+- Managed Instances is a recent AWS feature and requires AWS provider v6.15+
+  (this repo pins `>= 6.24`).
