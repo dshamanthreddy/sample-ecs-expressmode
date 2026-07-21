@@ -1,0 +1,10 @@
+# Deliberately large image to make SOCI's lazy-loading benefit visible.
+# The random blob is incompressible so the image/pull stays large.
+FROM public.ecr.aws/nginx/nginx:1.27-alpine
+
+ARG BLOB_MB=3000
+RUN dd if=/dev/urandom of=/blob.bin bs=1M count=${BLOB_MB}
+
+# Start and exit quickly so the measurement task reaches RUNNING then STOPPED,
+# which keeps the demo cheap and lets us read pull/startup timestamps.
+CMD ["sh", "-c", "echo container started; sleep 2"]

@@ -1,0 +1,72 @@
+name: SOCI Demo (manual)
+
+# Manual-only demo of Seekable OCI (SOCI) lazy loading on Fargate.
+# Builds a large image, pushes it to a dedicated demo ECR repo, and measures
+# task pull/startup time. Run it before and after enabling SOCI indexing to
+# compare. Never runs on push. Reuses the existing nginx-ecs-dev stack.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Tag for the fat demo image"
+        type: string
+        default: "fat"
+      blob_size_mb:
+        description: "Filler size in MB (drives image size)"
+        type: string
+        default: "3000"
+      label:
+        description: "Label for this measurement run (e.g. no-soci or with-soci)"
+        type: string
+        default: "no-soci"
+
+env:
+  AWS_REGION: us-east-1
+  DEMO_REPO: soci-demo
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  demo:
+    name: Build, push, and measure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TF_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
+
+      - name: Ensure demo ECR repo exists
+        run: |
+          aws ecr describe-repositories --repository-names "$DEMO_REPO" >/dev/null 2>&1 \
+            || aws ecr create-repository --repository-name "$DEMO_REPO" \
+                 --image-tag-mutability MUTABLE >/dev/null
+          echo "Demo repo ready: $DEMO_REPO"
+
+      - name: Build and push fat image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          IMAGE="$ECR_REGISTRY/$DEMO_REPO:${{ github.event.inputs.image_tag }}"
+          docker build -f demo-soci/Dockerfile.fat \
+            --build-arg BLOB_MB=${{ github.event.inputs.blob_size_mb }} \
+            -t "$IMAGE" demo-soci
+          docker push "$IMAGE"
+
+      - name: Measure task startup
+        env:
+          REPO: ${{ env.DEMO_REPO }}
+        run: |
+          chmod +x demo-soci/measure.sh
+          demo-soci/measure.sh "${{ github.event.inputs.image_tag }}" "${{ github.event.inputs.label }}"
