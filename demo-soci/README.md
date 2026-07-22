@@ -40,11 +40,24 @@ Run the **SOCI Demo (manual)** workflow with:
 Note the reported **image pull window** and **created → RUNNING** time (tens of
 seconds for a 3 GB image).
 
-### 2. Enable SOCI indexing
-Deploy AWS's **SOCI Index Builder** solution once
-(`cfn-ecr-aws-soci-index-builder`). It runs a Lambda on ECR push events that
-generates and pushes a SOCI index automatically. See:
-https://aws.amazon.com/blogs/containers/ (search "SOCI Index Builder").
+### 2. Enable SOCI indexing (deploy the Index Builder)
+Deploy the SOCI Index Builder once, using the Terraform in `terraform/`. It
+wraps AWS's official CloudFormation solution and scopes it to the `soci-demo`
+repo, so it auto-generates a SOCI index (v2) on every future push there and
+never touches the app's `nginx-ecs-dev` repo.
+
+```bash
+cd terraform
+terraform init
+terraform apply          # deploys the soci-index-builder CloudFormation stack
+```
+
+This config uses **local state** on purpose — it is fully isolated from the
+main app stack (which uses the S3 backend). It creates two Lambdas + an
+EventBridge rule; your existing infrastructure is untouched.
+
+> The Index Builder only indexes images pushed **after** it's deployed, so you
+> must re-push the image (step 3) once the stack exists.
 
 Alternatively, generate the index by hand on an EC2/Cloud9 host that has
 containerd + the SOCI snapshotter (the "SOCI toolbox"): `soci create <image>`
@@ -83,9 +96,27 @@ REPO=soci-demo ./measure.sh fat no-soci
 
 ## Clean up
 
+The **Terraform Destroy (manual)** workflow removes the `soci-demo` ECR repo
+and task definitions automatically after tearing down the main stack — run it
+and type `destroy`.
+
+The **SOCI Index Builder** stack is separate (local-state Terraform), so tear
+it down on its own:
+
+```bash
+cd terraform
+terraform destroy
+```
+
+To clean up only the demo resources by hand:
+
 ```bash
 aws ecr delete-repository --repository-name soci-demo --force --region us-east-1
-aws ecs deregister-task-definition --task-definition soci-demo:<revision> --region us-east-1
+# deregister any soci-demo task definition revisions
+for arn in $(aws ecs list-task-definitions --family-prefix soci-demo \
+    --region us-east-1 --query 'taskDefinitionArns[]' --output text); do
+  aws ecs deregister-task-definition --task-definition "$arn" --region us-east-1 >/dev/null
+done
 ```
 
 ## Notes

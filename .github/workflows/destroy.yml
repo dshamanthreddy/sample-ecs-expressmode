@@ -3,6 +3,9 @@ name: Terraform Destroy (manual)
 # Tears down ALL infrastructure. Runs ONLY when triggered by hand from the
 # GitHub Actions UI (workflow_dispatch) — never on push. A typed confirmation
 # is required so it cannot fire by accident.
+#
+# Also cleans up the imperatively-created SOCI demo resources (the soci-demo
+# ECR repo and task definitions), which Terraform does not manage.
 
 on:
   workflow_dispatch:
@@ -62,3 +65,28 @@ jobs:
 
       - name: Terraform destroy
         run: terraform destroy -input=false -auto-approve
+
+      - name: Clean up SOCI demo resources (not Terraform-managed)
+        working-directory: ${{ github.workspace }}
+        run: |
+          # Delete the demo ECR repo (removes the fat images + SOCI indexes).
+          if aws ecr describe-repositories --repository-names soci-demo \
+               --region "$AWS_REGION" >/dev/null 2>&1; then
+            aws ecr delete-repository --repository-name soci-demo --force \
+              --region "$AWS_REGION" >/dev/null
+            echo "Deleted ECR repo: soci-demo"
+          else
+            echo "No soci-demo ECR repo to delete."
+          fi
+
+          # Deregister any soci-demo task definition revisions.
+          arns=$(aws ecs list-task-definitions --family-prefix soci-demo \
+            --region "$AWS_REGION" --query 'taskDefinitionArns[]' --output text)
+          if [ -n "$arns" ]; then
+            for arn in $arns; do
+              aws ecs deregister-task-definition --task-definition "$arn" \
+                --region "$AWS_REGION" >/dev/null && echo "Deregistered $arn"
+            done
+          else
+            echo "No soci-demo task definitions to deregister."
+          fi
