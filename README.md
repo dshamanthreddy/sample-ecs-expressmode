@@ -37,9 +37,15 @@ terraform/
   ecs.tf                  Cluster, task definition, service (compute-aware)
   managed_instances.tf    Managed Instances capacity provider + IAM (opt-in)
   outputs.tf              ALB DNS, ECR URL, names, role ARN
+demo-soci/                SOCI lazy-loading demo (see demo-soci/README.md)
+  Dockerfile.fat          ~3 GB image to make SOCI's benefit visible
+  measure.sh              launches a Fargate task, prints pull/startup deltas
+  terraform/              deploys the SOCI Index Builder (isolated, local state)
 .github/workflows/
   pipeline.yml            plan on push/PR; gated apply + deploy on manual run
   destroy.yml             manual-only terraform destroy (typed confirmation)
+  soci-demo.yml           manual-only: build fat image + measure startup
+  soci-cleanup.yml        manual-only: delete all SOCI demo resources
 ```
 
 ## Compute options: Fargate vs Managed Instances
@@ -126,10 +132,29 @@ Created by hand in the target account (`340290106740`, `us-east-1`):
    the ECS service, waiting for it to stabilize.
 5. Open the `alb_dns_name` output in a browser; `/health` returns `200 ok`.
 
+## SOCI lazy-loading demo
+
+`demo-soci/` contains a self-contained demo showing how **Seekable OCI (SOCI)**
+speeds up Fargate task startup by lazily loading a large image instead of
+downloading it fully. It's isolated from the app stack (its own `soci-demo` ECR
+repo and local-state Terraform for the SOCI Index Builder).
+
+- **SOCI Demo (manual)** workflow → builds a ~3 GB image and measures pull/startup.
+- `demo-soci/terraform/` → deploys the SOCI Index Builder (auto-generates the
+  index on push).
+- **SOCI Cleanup (manual)** workflow → deletes the demo repo, task defs, and the
+  Index Builder stack.
+
+SOCI lazy loading is a **Fargate-only** feature (not EC2 / Managed Instances).
+Full walkthrough, results, and the v1-vs-v2 caveat are in
+[`demo-soci/README.md`](demo-soci/README.md).
+
 ## Tear down
 
 **Actions → Terraform Destroy (manual) → Run workflow**, type `destroy` to
 confirm. It runs only on manual trigger and never on push.
+
+For the SOCI demo, use **Actions → SOCI Cleanup (manual)** (type `cleanup`).
 
 ## Key variables
 
