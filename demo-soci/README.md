@@ -150,6 +150,63 @@ index is being ignored because this account is new to SOCI. To fix, produce a
 A v2 setup shows **three** artifacts in `describe-images`: the image, the SOCI
 index (`...soci.index.v2+json`), and an image index (`...oci.image.index.v1+json`).
 
+## Which images get indexed (how the filter works)
+
+The Index Builder does **not** index every image in your account — it's scoped
+by the `SociRepositoryImageTagFilters` parameter (set via `repo_filter` in
+`terraform/`, default `soci-demo:*`). That value is used in two places:
+
+1. **At deploy time** — a helper Lambda parses the filter into repository ARNs
+   and scopes the generator Lambda's IAM so it can only push/pull ECR images in
+   the matched repos (least privilege).
+2. **At runtime** — it decides whether each pushed image gets indexed.
+
+Runtime flow, per push:
+
+```
+docker push soci-demo:fat-soci
+        │
+        ▼
+ECR emits an "ECR Image Action" event (action-type=PUSH, result=SUCCESS)
+        │
+        ▼
+EventBridge rule  ──►  Filtering Lambda
+        │
+        ▼
+builds "repository-name:image-tag" (e.g. "soci-demo:fat-soci")
+and matches it against each filter (e.g. "soci-demo:*")
+        │
+   ┌────┴───────────┐
+ match           no match
+   │                 │
+   ▼                 ▼
+invoke Generator   do nothing (image NOT indexed)
+   │
+   ▼
+Generator pulls image, builds the SOCI index, pushes it to the repo
+```
+
+Matching rules:
+
+- A filter is `repository:tag`; `*` is a wildcard in either part.
+- The event's `repository-name` + `image-tag` are tested against each filter; a
+  match on **any** filter triggers indexing.
+- Multiple comma-separated filters are allowed.
+
+| Filter | Matches |
+|--------|---------|
+| `soci-demo:*` | any tag pushed to `soci-demo` (this demo) |
+| `*:latest` | the `latest` tag in any repo |
+| `prod*:*` | any tag in any repo whose name starts with `prod` |
+| `*:*` | everything |
+
+There is also a **size gate**: even for a matched image, the generator only
+builds a zTOC for layers above the min-layer-size. If no layer is large enough,
+no index is created at all — which is why small images (like the app's ~20 MB
+image) produce no index even if they match the filter.
+
+To change scope, edit `repo_filter` in `terraform/` and re-apply.
+
 ## Local run (instead of the workflow)
 
 ```bash

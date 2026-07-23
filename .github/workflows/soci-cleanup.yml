@@ -1,0 +1,88 @@
+name: SOCI Cleanup (manual)
+
+# Manual-only teardown of the SOCI demo footprint:
+#   - the soci-demo ECR repo (all fat images + SOCI index artifacts)
+#   - the soci-demo task definitions
+#   - the SOCI Index Builder CloudFormation stack (Lambdas + EventBridge rule)
+#
+# Never runs on push. A typed confirmation is required. This is separate from
+# the app's "Terraform Destroy" workflow because the SOCI demo is isolated.
+#
+# Note: the Index Builder was deployed from demo-soci/terraform/ with LOCAL
+# state. This workflow deletes the CloudFormation stack directly, so that local
+# state becomes stale afterward — delete demo-soci/terraform/terraform.tfstate*
+# (or `terraform state rm`) if you plan to re-apply locally.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "cleanup" to confirm deleting all SOCI demo resources'
+        required: true
+        default: ""
+
+env:
+  AWS_REGION: us-east-1
+  DEMO_REPO: soci-demo
+  SOCI_STACK: soci-index-builder
+
+# Separate group from the app infra so it can't clash with app apply/destroy.
+concurrency:
+  group: soci-demo-cleanup
+  cancel-in-progress: false
+
+permissions:
+  id-token: write   # required for OIDC
+  contents: read
+
+jobs:
+  cleanup:
+    name: Delete SOCI demo resources
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate confirmation input
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "cleanup" ]; then
+            echo "::error::Confirmation failed. You must type 'cleanup' to proceed."
+            exit 1
+          fi
+          echo "Confirmation accepted. Proceeding with SOCI cleanup."
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TF_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Delete soci-demo ECR repo (images + SOCI index)
+        run: |
+          if aws ecr describe-repositories --repository-names "$DEMO_REPO" >/dev/null 2>&1; then
+            aws ecr delete-repository --repository-name "$DEMO_REPO" --force >/dev/null
+            echo "Deleted ECR repo: $DEMO_REPO"
+          else
+            echo "No $DEMO_REPO ECR repo to delete."
+          fi
+
+      - name: Deregister soci-demo task definitions
+        run: |
+          arns=$(aws ecs list-task-definitions --family-prefix soci-demo \
+            --query 'taskDefinitionArns[]' --output text)
+          if [ -n "$arns" ]; then
+            for arn in $arns; do
+              aws ecs deregister-task-definition --task-definition "$arn" >/dev/null \
+                && echo "Deregistered $arn"
+            done
+          else
+            echo "No soci-demo task definitions to deregister."
+          fi
+
+      - name: Delete SOCI Index Builder CloudFormation stack
+        run: |
+          if aws cloudformation describe-stacks --stack-name "$SOCI_STACK" >/dev/null 2>&1; then
+            aws cloudformation delete-stack --stack-name "$SOCI_STACK"
+            echo "Waiting for stack '$SOCI_STACK' to delete..."
+            aws cloudformation wait stack-delete-complete --stack-name "$SOCI_STACK"
+            echo "Deleted CloudFormation stack: $SOCI_STACK"
+          else
+            echo "No $SOCI_STACK CloudFormation stack to delete."
+          fi
